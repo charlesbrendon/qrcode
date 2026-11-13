@@ -5,7 +5,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 import qrcode
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 
 # ---------------------------------------------------------------------
@@ -15,6 +15,7 @@ from PIL import Image, ImageTk
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(APP_DIR, "historico_qr.json")
+ICON_FILE = os.path.join(APP_DIR, "app.ico")
 
 # Paleta: azul-marinho, ciano discreto e superfícies neutras
 C = {
@@ -41,6 +42,45 @@ FONT = "Segoe UI"
 QR_COLOR = "#14243A"
 QR_SIZE = 300
 MAX_HISTORY = 150
+
+
+def create_app_icon():
+    """Cria o ícone do QR Studio e o salva em formato .ico."""
+    size = 256
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (0, 0, size - 1, size - 1), radius=52, fill=C["accent"]
+    )
+
+    def eye(x, y):
+        draw.rounded_rectangle(
+            (x, y, x + 70, y + 70), radius=10, fill="white"
+        )
+        draw.rounded_rectangle(
+            (x + 14, y + 14, x + 56, y + 56),
+            radius=6, fill=C["accent"],
+        )
+        draw.rounded_rectangle(
+            (x + 24, y + 24, x + 46, y + 46),
+            radius=3, fill="white",
+        )
+
+    eye(30, 30)
+    eye(156, 30)
+    eye(30, 156)
+
+    for x, y in (
+        (160, 160), (190, 160), (160, 190),
+        (205, 195), (185, 215), (215, 165),
+    ):
+        draw.rectangle((x, y, x + 20, y + 20), fill="white")
+
+    # O arquivo .ico contém múltiplas resoluções para Windows e atalhos.
+    image.save(ICON_FILE, format="ICO", sizes=[
+        (16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)
+    ])
+    return image
 
 
 def generate_qr(data: str) -> Image.Image:
@@ -87,6 +127,17 @@ class QRStudio:
         self.root.geometry("1080x760")
         self.root.minsize(900, 650)
         self.root.configure(bg=C["bg"])
+
+        # iconphoto funciona em Windows e Linux; o .ico também fica
+        # disponível para empacotar o aplicativo como executável.
+        try:
+            icon_image = create_app_icon()
+            self.app_icon_photo = ImageTk.PhotoImage(icon_image)
+            self.root.iconphoto(True, self.app_icon_photo)
+            if os.name == "nt":
+                self.root.iconbitmap(ICON_FILE)
+        except (OSError, tk.TclError):
+            self.app_icon_photo = None
 
         self.history = load_history()
         self.current_qr = None
@@ -190,15 +241,20 @@ class QRStudio:
             fg="#71869F", font=(FONT, 8),
         ).pack(anchor="w", padx=23, pady=(0, 8))
         tk.Label(
-            self.sidebar, text="Feito para facilitar. by Charles Brendon", bg=C["nav"],
-            fg="#A8B8C9", font=(FONT, 9),
-        ).pack(anchor="w", padx=23, pady=(0, 22))
+    self.sidebar,
+    text="Feito para facilitar. By Charles Brendon",
+    bg=C["nav"],
+    fg="#A8B8C9",
+    font=(FONT, 9),
+    wraplength=178,
+    justify="left",
+).pack(anchor="w", padx=23, pady=(0, 22))
 
         self.main = tk.Frame(self.root, bg=C["bg"])
         self.main.pack(side="left", fill="both", expand=True)
 
         self.topbar = tk.Frame(
-            self.main, bg=C["surface"], height=88,
+            self.main, bg=C["surface"], height=86,
             highlightbackground=C["border"], highlightthickness=1,
         )
         self.topbar.pack(fill="x")
