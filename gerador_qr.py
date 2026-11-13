@@ -198,14 +198,14 @@ class QRStudio:
         self.main.pack(side="left", fill="both", expand=True)
 
         self.topbar = tk.Frame(
-            self.main, bg=C["surface"], height=76,
+            self.main, bg=C["surface"], height=88,
             highlightbackground=C["border"], highlightthickness=1,
         )
         self.topbar.pack(fill="x")
         self.topbar.pack_propagate(False)
 
         title_area = tk.Frame(self.topbar, bg=C["surface"])
-        title_area.pack(side="left", padx=32, pady=14)
+        title_area.pack(side="left", padx=32, pady=12)
         self.page_title = tk.Label(
             title_area, text="", bg=C["surface"], fg=C["text"],
             font=(FONT, 17, "bold"),
