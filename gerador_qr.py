@@ -2,423 +2,727 @@ import json
 import os
 import tkinter as tk
 from datetime import datetime
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import qrcode
 from PIL import Image, ImageTk
 
-ARQUIVO_HISTORICO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historico_qr.json")
 
-COR_BARRA = "#1F2937"
-COR_MENU = "#111827"
-COR_MENU_HOVER = "#374151"
-COR_AZUL = "#0078D7"
-COR_VERDE = "#28A745"
-COR_VERMELHO = "#DC3545"
-COR_FUNDO = "#F3F4F6"
+# ---------------------------------------------------------------------
+# QR Studio — interface inspirada em Things, Craft, Linear e Notion
+# Dependências: pip install qrcode[pil] pillow
+# ---------------------------------------------------------------------
 
-LARGURA_MENU = 200
-ALTURA_BARRA = 50
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+HISTORY_FILE = os.path.join(APP_DIR, "historico_qr.json")
 
-INSTRUCOES = (
-    "1. Digite um link, texto ou número no campo acima.\n"
-    "2. Clique em \"Gerar QR Code\" (ou pressione Enter).\n"
-    "3. Use \"Salvar Imagem (PNG)\" para guardar o QR Code.\n"
-    "4. Cada QR gerado vai automaticamente para o Histórico.\n"
-    "5. Abra o menu (☰) para trocar de tela ou sair."
-)
+# Paleta: azul-marinho, ciano discreto e superfícies neutras
+C = {
+    "nav": "#14243A",
+    "nav_hover": "#203650",
+    "nav_active": "#29435F",
+    "accent": "#2786D9",
+    "accent_hover": "#176FBD",
+    "accent_soft": "#EAF4FE",
+    "bg": "#F4F6F9",
+    "surface": "#FFFFFF",
+    "surface_alt": "#F8FAFC",
+    "border": "#E4E9F0",
+    "text": "#202B3C",
+    "muted": "#718096",
+    "subtle": "#A0ACBA",
+    "danger": "#D84C4C",
+    "danger_soft": "#FFF0F0",
+    "success": "#23845B",
+    "white": "#FFFFFF",
+}
+
+FONT = "Segoe UI"
+QR_COLOR = "#14243A"
+QR_SIZE = 300
+MAX_HISTORY = 150
 
 
-def criar_qr(dados):
+def generate_qr(data: str) -> Image.Image:
     qr = qrcode.QRCode(
-        version=1,
+        version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=10,
+        box_size=12,
         border=4,
     )
-    qr.add_data(dados)
+    qr.add_data(data)
     qr.make(fit=True)
-    return qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    return qr.make_image(fill_color=QR_COLOR, back_color="white").convert("RGB")
 
 
-def salvar_png(imagem_pil, nome_inicial="meu_qrcode.png"):
-    caminho = filedialog.asksaveasfilename(
-        defaultextension=".png",
-        filetypes=[("Imagem PNG", "*.png")],
-        title="Salvar QR Code como...",
-        initialfile=nome_inicial,
-    )
-    if caminho:
-        imagem_pil.save(caminho)
-        messagebox.showinfo("Sucesso", "QR Code salvo com sucesso!")
+def load_history():
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as file:
+            items = json.load(file)
+        if not isinstance(items, list):
+            return []
+        return [
+            item for item in items
+            if isinstance(item, dict) and isinstance(item.get("texto"), str)
+        ][:MAX_HISTORY]
+    except (OSError, json.JSONDecodeError):
+        return []
 
 
-class GeradorQRApp:
+def save_history(items):
+    try:
+        temp_file = HISTORY_FILE + ".tmp"
+        with open(temp_file, "w", encoding="utf-8") as file:
+            json.dump(items, file, ensure_ascii=False, indent=2)
+        os.replace(temp_file, HISTORY_FILE)
+        return True
+    except OSError:
+        return False
+
+
+class QRStudio:
     def __init__(self, root):
         self.root = root
-        self.root.title("Gerador de QR Code")
-        self.root.geometry("720x640")
-        self.root.resizable(False, False)
-        self.root.configure(bg=COR_FUNDO)
+        self.root.title("QR Studio")
+        self.root.geometry("1080x760")
+        self.root.minsize(900, 650)
+        self.root.configure(bg=C["bg"])
 
-        self.qr_image_pil = None
-        self.historico = self.carregar_historico()
-        self.menu_aberto = False
-        self.animando = False
-        self.progresso = 0.0  # 0 = fechado, 1 = aberto
+        self.history = load_history()
+        self.current_qr = None
+        self.current_text = ""
+        self.history_qr = None
+        self.preview_photo = None
+        self.history_photo = None
+        self.active_page = "generator"
+        self.history_selection = None
 
-        self.construir_barra_superior()
+        self.setup_style()
+        self.build_shell()
+        self.build_generator()
+        self.build_history()
+        self.show_page("generator")
 
-        self.corpo = tk.Frame(root, bg=COR_FUNDO)
-        self.corpo.pack(fill="both", expand=True)
+        self.root.bind("<Control-Return>", lambda _e: self.generate())
+        self.root.bind("<Control-s>", lambda _e: self.save_current())
+        self.root.bind("<Escape>", lambda _e: self.entry.focus_set())
 
-        self.pagina_gerador = tk.Frame(self.corpo, bg=COR_FUNDO)
-        self.pagina_historico = tk.Frame(self.corpo, bg=COR_FUNDO)
-
-        self.construir_gerador()
-        self.construir_historico()
-        self.construir_rodape()
-        self.construir_menu_lateral()
-
-        self.mostrar_pagina("gerador")
-
-    # ------------------------------------------------------------------
-    # Persistência do histórico
-    # ------------------------------------------------------------------
-    def carregar_historico(self):
+    # ---------------------------- Base visual -------------------------
+    def setup_style(self):
+        style = ttk.Style()
         try:
-            with open(ARQUIVO_HISTORICO, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-            return [i for i in dados if isinstance(i, dict) and "texto" in i]
-        except (OSError, json.JSONDecodeError):
-            return []
-
-    def salvar_historico(self):
-        try:
-            with open(ARQUIVO_HISTORICO, "w", encoding="utf-8") as f:
-                json.dump(self.historico, f, ensure_ascii=False, indent=2)
-        except OSError:
-            messagebox.showwarning("Aviso", "Não foi possível salvar o histórico em disco.")
-
-    # ------------------------------------------------------------------
-    # Barra superior com botão sanduíche
-    # ------------------------------------------------------------------
-    def construir_barra_superior(self):
-        barra = tk.Frame(self.root, bg=COR_BARRA, height=ALTURA_BARRA)
-        barra.pack(fill="x")
-        barra.pack_propagate(False)
-
-        self.canvas_burger = tk.Canvas(
-            barra, width=44, height=44, bg=COR_BARRA, highlightthickness=0, cursor="hand2"
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "History.Treeview",
+            background=C["surface"],
+            fieldbackground=C["surface"],
+            foreground=C["text"],
+            rowheight=38,
+            borderwidth=0,
+            font=(FONT, 10),
         )
-        self.canvas_burger.pack(side="left", padx=(10, 5), pady=3)
-        self.canvas_burger.bind("<Button-1>", lambda e: self.alternar_menu())
-
-        self.label_titulo = tk.Label(
-            barra, text="Gerador de QR Code", bg=COR_BARRA, fg="white", font=("Arial", 14, "bold")
+        style.configure(
+            "History.Treeview.Heading",
+            background=C["surface_alt"],
+            foreground=C["muted"],
+            relief="flat",
+            borderwidth=0,
+            font=(FONT, 9, "bold"),
+            padding=(10, 10),
         )
-        self.label_titulo.pack(side="left", padx=10)
-
-        self.desenhar_burger(0.0)
-
-    def desenhar_burger(self, t):
-        """Desenha as três barrinhas; em t=1 viram um X."""
-        c = self.canvas_burger
-        c.delete("all")
-
-        def lerp(a, b):
-            return a + (b - a) * t
-
-        # barra de cima -> diagonal \
-        c.create_line(
-            lerp(9, 12), lerp(13, 12), lerp(35, 32), lerp(13, 32),
-            fill="white", width=3, capstyle="round",
-        )
-        # barra do meio some
-        if t < 0.5:
-            c.create_line(9, 22, 35, 22, fill="white", width=3, capstyle="round")
-        # barra de baixo -> diagonal /
-        c.create_line(
-            lerp(9, 12), lerp(31, 32), lerp(35, 32), lerp(31, 12),
-            fill="white", width=3, capstyle="round",
+        style.map(
+            "History.Treeview",
+            background=[("selected", C["accent_soft"])],
+            foreground=[("selected", C["text"])],
         )
 
-    # ------------------------------------------------------------------
-    # Menu lateral com animação
-    # ------------------------------------------------------------------
-    def construir_menu_lateral(self):
-        self.menu = tk.Frame(self.corpo, bg=COR_MENU, width=LARGURA_MENU)
-        self.menu.place(x=-LARGURA_MENU, y=0, width=LARGURA_MENU, relheight=1)
+    def build_shell(self):
+        self.sidebar = tk.Frame(self.root, bg=C["nav"], width=224)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
+
+        brand = tk.Frame(self.sidebar, bg=C["nav"])
+        brand.pack(fill="x", padx=22, pady=(25, 34))
+        mark = tk.Label(
+            brand, text="⌗", bg=C["accent"], fg=C["white"],
+            font=(FONT, 19, "bold"), width=2, height=1,
+        )
+        mark.pack(side="left")
+        brand_text = tk.Frame(brand, bg=C["nav"])
+        brand_text.pack(side="left", padx=10)
+        tk.Label(
+            brand_text, text="QR Studio", bg=C["nav"], fg=C["white"],
+            font=(FONT, 15, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            brand_text, text="SIMPLES. RÁPIDO. SEU.", bg=C["nav"],
+            fg="#91A4BA", font=(FONT, 7, "bold"),
+        ).pack(anchor="w", pady=(2, 0))
 
         tk.Label(
-            self.menu, text="MENU", bg=COR_MENU, fg="#9CA3AF", font=("Arial", 9, "bold")
-        ).pack(anchor="w", padx=20, pady=(20, 10))
+            self.sidebar, text="ESPAÇO DE TRABALHO", bg=C["nav"],
+            fg="#8296AE", font=(FONT, 8, "bold"),
+        ).pack(anchor="w", padx=23, pady=(0, 10))
 
-        self.criar_item_menu("🔳  Gerador", lambda: self.navegar("gerador"))
-        self.criar_item_menu("🕘  Histórico", lambda: self.navegar("historico"))
-        self.criar_item_menu("🚪  Sair", self.sair)
+        self.nav_buttons = {}
+        self.nav_button("generator", "▦", "Gerador", self.show_generator)
+        self.nav_button("history", "◷", "Histórico", self.show_history)
 
-    def criar_item_menu(self, texto, comando):
-        btn = tk.Label(
-            self.menu, text=texto, bg=COR_MENU, fg="white", font=("Arial", 12),
-            anchor="w", padx=20, pady=12, cursor="hand2",
+        tk.Frame(self.sidebar, bg="#2B3D53", height=1).pack(
+            fill="x", padx=20, pady=20
         )
-        btn.pack(fill="x")
-        btn.bind("<Enter>", lambda e: btn.config(bg=COR_MENU_HOVER))
-        btn.bind("<Leave>", lambda e: btn.config(bg=COR_MENU))
-        btn.bind("<Button-1>", lambda e: comando())
+        tk.Label(
+            self.sidebar, text="DICA RÁPIDA", bg=C["nav"], fg="#8296AE",
+            font=(FONT, 8, "bold"),
+        ).pack(anchor="w", padx=23, pady=(0, 7))
+        tk.Label(
+            self.sidebar,
+            text="Use Ctrl + Enter para gerar\num QR Code e Ctrl + S para\nsalvar a imagem.",
+            bg=C["nav"], fg="#B5C2D1", justify="left",
+            font=(FONT, 9), pady=2,
+        ).pack(anchor="w", padx=23)
 
-    def alternar_menu(self):
-        if self.animando:
-            return
-        self.menu_aberto = not self.menu_aberto
-        self.animando = True
-        self.animar_menu()
+        tk.Frame(self.sidebar, bg=C["nav"]).pack(fill="both", expand=True)
+        tk.Label(
+            self.sidebar, text="QR STUDIO  ·  1.0", bg=C["nav"],
+            fg="#71869F", font=(FONT, 8),
+        ).pack(anchor="w", padx=23, pady=(0, 8))
+        tk.Label(
+            self.sidebar, text="Feito para facilitar. by Charles Brendon", bg=C["nav"],
+            fg="#A8B8C9", font=(FONT, 9),
+        ).pack(anchor="w", padx=23, pady=(0, 22))
 
-    def animar_menu(self):
-        alvo = 1.0 if self.menu_aberto else 0.0
-        passo = 0.1 if self.menu_aberto else -0.1
-        self.progresso = min(1.0, max(0.0, self.progresso + passo))
+        self.main = tk.Frame(self.root, bg=C["bg"])
+        self.main.pack(side="left", fill="both", expand=True)
 
-        # easing suave (ease-in-out)
-        t = self.progresso
-        suave = t * t * (3 - 2 * t)
+        self.topbar = tk.Frame(
+            self.main, bg=C["surface"], height=76,
+            highlightbackground=C["border"], highlightthickness=1,
+        )
+        self.topbar.pack(fill="x")
+        self.topbar.pack_propagate(False)
 
-        self.menu.place(x=int(-LARGURA_MENU + LARGURA_MENU * suave), y=0,
-                        width=LARGURA_MENU, relheight=1)
-        self.menu.lift()
-        self.desenhar_burger(suave)
+        title_area = tk.Frame(self.topbar, bg=C["surface"])
+        title_area.pack(side="left", padx=32, pady=14)
+        self.page_title = tk.Label(
+            title_area, text="", bg=C["surface"], fg=C["text"],
+            font=(FONT, 17, "bold"),
+        )
+        self.page_title.pack(anchor="w")
+        self.page_subtitle = tk.Label(
+            title_area, text="", bg=C["surface"], fg=C["muted"],
+            font=(FONT, 9),
+        )
+        self.page_subtitle.pack(anchor="w", pady=(2, 0))
 
-        if abs(self.progresso - alvo) > 1e-6:
-            self.root.after(15, self.animar_menu)
+        self.page_area = tk.Frame(self.main, bg=C["bg"])
+        self.page_area.pack(fill="both", expand=True, padx=30, pady=26)
+
+        self.footer = tk.Frame(self.main, bg=C["bg"])
+        self.footer.pack(fill="x", padx=32, pady=(0, 14))
+        tk.Label(
+            self.footer, text="Seus dados ficam armazenados localmente neste computador.",
+            bg=C["bg"], fg=C["subtle"], font=(FONT, 8),
+        ).pack(anchor="w")
+
+    def nav_button(self, key, symbol, label, command):
+        btn = tk.Frame(self.sidebar, bg=C["nav"], cursor="hand2")
+        btn.pack(fill="x", padx=12, pady=2)
+        accent = tk.Frame(btn, bg=C["nav"], width=3)
+        accent.pack(side="left", fill="y")
+        text = tk.Label(
+            btn, text=f"  {symbol}    {label}", bg=C["nav"], fg="#C4D0DD",
+            font=(FONT, 10), anchor="w", padx=12, pady=12, cursor="hand2",
+        )
+        text.pack(side="left", fill="x", expand=True)
+
+        def click(_event=None):
+            command()
+
+        def enter(_event=None):
+            if self.active_page != key:
+                btn.configure(bg=C["nav_hover"])
+                text.configure(bg=C["nav_hover"])
+
+        def leave(_event=None):
+            self.update_nav()
+
+        for widget in (btn, text, accent):
+            widget.bind("<Button-1>", click)
+            widget.bind("<Enter>", enter)
+            widget.bind("<Leave>", leave)
+        self.nav_buttons[key] = (btn, accent, text)
+
+    def update_nav(self):
+        for key, (btn, accent, label) in self.nav_buttons.items():
+            active = key == self.active_page
+            bg = C["nav_active"] if active else C["nav"]
+            btn.configure(bg=bg)
+            label.configure(
+                bg=bg, fg=C["white"] if active else "#C4D0DD",
+                font=(FONT, 10, "bold" if active else "normal"),
+            )
+            accent.configure(bg=C["accent"] if active else C["nav"])
+
+    def show_page(self, page):
+        self.active_page = page
+        for child in self.page_area.winfo_children():
+            child.pack_forget()
+        if page == "generator":
+            self.generator_page.pack(fill="both", expand=True)
+            self.page_title.configure(text="Gerador de QR Code")
+            self.page_subtitle.configure(
+                text="Transforme links, textos e informações em códigos QR."
+            )
         else:
-            self.animando = False
+            self.history_page.pack(fill="both", expand=True)
+            self.page_title.configure(text="Seu histórico")
+            self.page_subtitle.configure(
+                text="Encontre novamente os códigos que você já criou."
+            )
+            self.refresh_history()
+        self.update_nav()
 
-    def fechar_menu(self):
-        if self.menu_aberto and not self.animando:
-            self.alternar_menu()
+    def show_generator(self):
+        self.show_page("generator")
 
-    def navegar(self, pagina):
-        self.mostrar_pagina(pagina)
-        self.fechar_menu()
+    def show_history(self):
+        self.show_page("history")
 
-    def mostrar_pagina(self, pagina):
-        self.pagina_gerador.pack_forget()
-        self.pagina_historico.pack_forget()
-        if pagina == "gerador":
-            self.pagina_gerador.pack(fill="both", expand=True, padx=25, pady=(15, 35))
-            self.label_titulo.config(text="Gerador de QR Code")
-        else:
-            self.atualizar_lista_historico()
-            self.pagina_historico.pack(fill="both", expand=True, padx=25, pady=(15, 35))
-            self.label_titulo.config(text="Histórico")
-        self.menu.lift()
-
-    def sair(self):
-        if messagebox.askyesno("Sair", "Deseja realmente sair do aplicativo?"):
-            self.root.destroy()
-
-    # ------------------------------------------------------------------
-    # Página: Gerador
-    # ------------------------------------------------------------------
-    def construir_gerador(self):
-        p = self.pagina_gerador
-
-        tk.Label(p, text="Digite o link, texto ou número:", font=("Arial", 11, "bold"),
-                 bg=COR_FUNDO).pack(anchor="w")
-
-        self.entrada_texto = tk.Entry(p, font=("Arial", 12))
-        self.entrada_texto.pack(fill="x", pady=(5, 10))
-        self.entrada_texto.bind("<Return>", lambda e: self.gerar_qr())
-        self.entrada_texto.focus()
-
-        tk.Button(
-            p, text="Gerar QR Code", font=("Arial", 11, "bold"),
-            bg=COR_AZUL, fg="white", cursor="hand2", command=self.gerar_qr,
-        ).pack(fill="x", pady=(0, 10))
-
-        meio = tk.Frame(p, bg=COR_FUNDO)
-        meio.pack(fill="both", expand=True)
-
-        self.label_imagem = tk.Label(
-            meio, text="O QR Code aparecerá aqui", bg="#E0E0E0", width=30, height=14
+    # ------------------------------ Helpers --------------------------
+    def card(self, parent, **kwargs):
+        return tk.Frame(
+            parent, bg=C["surface"], highlightbackground=C["border"],
+            highlightthickness=1, **kwargs
         )
-        self.label_imagem.pack(side="left", anchor="n")
 
-        caixa = tk.LabelFrame(meio, text=" Instruções de uso ", font=("Arial", 10, "bold"),
-                              bg=COR_FUNDO, padx=8, pady=8)
-        caixa.pack(side="left", fill="both", expand=True, padx=(15, 0))
+    def section_label(self, parent, text):
+        tk.Label(
+            parent, text=text, bg=C["surface"], fg=C["text"],
+            font=(FONT, 10, "bold"),
+        ).pack(anchor="w")
 
-        self.texto_instrucoes = tk.Text(
-            caixa, font=("Arial", 10), wrap="word", bg="white", relief="flat",
-            height=10, width=28,
+    def action_button(self, parent, text, command, primary=True, compact=False):
+        bg = C["accent"] if primary else C["surface"]
+        fg = C["white"] if primary else C["text"]
+        active = C["accent_hover"] if primary else C["surface_alt"]
+        btn = tk.Button(
+            parent, text=text, command=command, bg=bg, fg=fg,
+            activebackground=active, activeforeground=fg,
+            relief="flat", bd=0, cursor="hand2",
+            font=(FONT, 9, "bold"), padx=16 if compact else 20,
+            pady=8 if compact else 11,
+            highlightthickness=1 if not primary else 0,
+            highlightbackground=C["border"],
         )
-        self.texto_instrucoes.insert("1.0", INSTRUCOES)
-        self.texto_instrucoes.config(state="disabled")
-        self.texto_instrucoes.pack(fill="both", expand=True)
+        btn.pack_propagate(False)
+        return btn
 
-        self.btn_salvar = tk.Button(
-            p, text="Salvar Imagem (PNG)", font=("Arial", 11),
-            state="disabled", cursor="hand2", command=self.salvar_qr,
+    def show_empty_qr(self):
+        self.qr_canvas.delete("all")
+        self.qr_canvas.create_text(
+            170, 145, text="⌗", fill="#C6D2DF", font=(FONT, 58),
         )
-        self.btn_salvar.pack(fill="x", pady=(10, 0))
+        self.qr_canvas.create_text(
+            170, 205, text="Seu QR Code aparecerá aqui",
+            fill=C["muted"], font=(FONT, 9),
+        )
 
-    def gerar_qr(self):
-        dados = self.entrada_texto.get().strip()
-        if not dados:
-            messagebox.showwarning("Aviso", "Por favor, digite algum texto, link ou número!")
+    def render_qr(self, canvas, image, size, attribute):
+        rendered = image.resize((size - 34, size - 34), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(rendered)
+        canvas.delete("all")
+        canvas.create_image(size / 2, size / 2, image=photo)
+        setattr(self, attribute, photo)
+
+    # ------------------------------ Generator ------------------------
+    def build_generator(self):
+        self.generator_page = tk.Frame(self.page_area, bg=C["bg"])
+
+        intro = tk.Frame(self.generator_page, bg=C["bg"])
+        intro.pack(fill="x", pady=(0, 18))
+        tk.Label(
+            intro, text="O que vamos transformar em QR Code?",
+            bg=C["bg"], fg=C["text"], font=(FONT, 12, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            intro, text="Cole um endereço, escreva uma mensagem ou informe um número.",
+            bg=C["bg"], fg=C["muted"], font=(FONT, 9),
+        ).pack(anchor="w", pady=(4, 0))
+
+        content = tk.Frame(self.generator_page, bg=C["bg"])
+        content.pack(fill="both", expand=True)
+
+        left = tk.Frame(content, bg=C["bg"])
+        left.pack(side="left", fill="both", expand=True, padx=(0, 16))
+
+        input_card = self.card(left)
+        input_card.pack(fill="x")
+        input_inner = tk.Frame(input_card, bg=C["surface"])
+        input_inner.pack(fill="x", padx=20, pady=20)
+
+        self.section_label(input_inner, "CONTEÚDO")
+        tk.Label(
+            input_inner, text="Link, texto ou número", bg=C["surface"],
+            fg=C["muted"], font=(FONT, 9),
+        ).pack(anchor="w", pady=(15, 7))
+
+        entry_wrap = tk.Frame(
+            input_inner, bg=C["surface"], highlightbackground=C["border"],
+            highlightthickness=1,
+        )
+        entry_wrap.pack(fill="x")
+        self.entry = tk.Entry(
+            entry_wrap, bg=C["surface"], fg=C["text"], insertbackground=C["accent"],
+            relief="flat", bd=0, font=(FONT, 11),
+        )
+        self.entry.pack(fill="x", padx=12, pady=12)
+        self.entry.bind("<Return>", lambda _e: self.generate())
+
+        self.char_count = tk.Label(
+            input_inner, text="0 caracteres", bg=C["surface"],
+            fg=C["subtle"], font=(FONT, 8),
+        )
+        self.char_count.pack(anchor="e", pady=(5, 13))
+        self.entry.bind("<KeyRelease>", self.update_char_count)
+
+        buttons = tk.Frame(input_inner, bg=C["surface"])
+        buttons.pack(fill="x")
+        self.generate_btn = self.action_button(
+            buttons, "Gerar QR Code  →", self.generate, primary=True
+        )
+        self.generate_btn.pack(side="left", fill="x", expand=True)
+        self.clear_btn = self.action_button(
+            buttons, "Limpar", self.clear_input, primary=False
+        )
+        self.clear_btn.pack(side="left", padx=(8, 0))
+
+        hint = self.card(left)
+        hint.pack(fill="x", pady=(14, 0))
+        tk.Label(
+            hint, text="✦  Dica", bg=C["surface"], fg=C["text"],
+            font=(FONT, 9, "bold"),
+        ).pack(anchor="w", padx=18, pady=(14, 4))
+        tk.Label(
+            hint,
+            text="O código é gerado localmente. O conteúdo digitado não é enviado para nenhum servidor.",
+            bg=C["surface"], fg=C["muted"], font=(FONT, 9),
+            wraplength=390, justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 14))
+
+        right = self.card(content)
+        right.pack(side="left", fill="both", expand=True)
+        tk.Label(
+            right, text="PRÉ-VISUALIZAÇÃO", bg=C["surface"], fg=C["muted"],
+            font=(FONT, 8, "bold"),
+        ).pack(anchor="w", padx=20, pady=(18, 8))
+
+        preview_frame = tk.Frame(right, bg=C["surface_alt"])
+        preview_frame.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+        self.qr_canvas = tk.Canvas(
+            preview_frame, width=290, height=290, bg=C["surface_alt"],
+            highlightthickness=0,
+        )
+        self.qr_canvas.pack(fill="both", expand=True, pady=5)
+        self.show_empty_qr()
+
+        self.result_label = tk.Label(
+            right, text="Nenhum código gerado ainda", bg=C["surface"],
+            fg=C["muted"], font=(FONT, 9),
+        )
+        self.result_label.pack(anchor="w", padx=20, pady=(0, 12))
+
+        self.save_btn = self.action_button(
+            right, "↓   Salvar imagem PNG", self.save_current, primary=False
+        )
+        self.save_btn.pack(fill="x", padx=18, pady=(0, 10))
+        self.copy_btn = self.action_button(
+            right, "Copiar conteúdo", self.copy_content, primary=True
+        )
+        self.copy_btn.pack(fill="x", padx=18, pady=(0, 18))
+        self.set_result_actions(False)
+        self.entry.focus_set()
+
+    def update_char_count(self, _event=None):
+        count = len(self.entry.get())
+        self.char_count.configure(text=f"{count:,} caracteres".replace(",", "."))
+
+    def set_result_actions(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for btn in (self.save_btn, self.copy_btn):
+            btn.configure(
+                state=state,
+                bg=(C["surface"] if btn == self.save_btn else C["accent"])
+                if enabled else "#E9EDF2",
+                fg=(C["text"] if btn == self.save_btn else C["white"])
+                if enabled else C["subtle"],
+                cursor="hand2" if enabled else "arrow",
+            )
+
+    def generate(self):
+        data = self.entry.get().strip()
+        if not data:
+            messagebox.showinfo("Conteúdo necessário", "Digite um link, texto ou número para continuar.")
+            self.entry.focus_set()
+            return
+        try:
+            image = generate_qr(data)
+        except Exception as exc:
+            messagebox.showerror("Não foi possível gerar", f"O conteúdo não pôde ser convertido.\n\n{exc}")
             return
 
-        self.qr_image_pil = criar_qr(dados)
-
-        img_exibicao = self.qr_image_pil.resize((250, 250), Image.Resampling.LANCZOS)
-        img_tk = ImageTk.PhotoImage(img_exibicao)
-        self.label_imagem.config(image=img_tk, text="", width=250, height=250)
-        self.label_imagem.image = img_tk
-        self.btn_salvar.config(state="normal", bg=COR_VERDE, fg="white")
-
-        self.adicionar_ao_historico(dados)
-
-    def salvar_qr(self):
-        if self.qr_image_pil:
-            salvar_png(self.qr_image_pil)
-
-    # ------------------------------------------------------------------
-    # Página: Histórico
-    # ------------------------------------------------------------------
-    def construir_historico(self):
-        p = self.pagina_historico
-
-        tk.Label(p, text="QR Codes gerados anteriormente:", font=("Arial", 11, "bold"),
-                 bg=COR_FUNDO).pack(anchor="w", pady=(0, 8))
-
-        corpo = tk.Frame(p, bg=COR_FUNDO)
-        corpo.pack(fill="both", expand=True)
-
-        esquerda = tk.Frame(corpo, bg=COR_FUNDO)
-        esquerda.pack(side="left", fill="both", expand=True)
-
-        scroll = tk.Scrollbar(esquerda)
-        scroll.pack(side="right", fill="y")
-
-        self.lista_historico = tk.Listbox(
-            esquerda, font=("Arial", 10), yscrollcommand=scroll.set,
-            activestyle="none", exportselection=False, width=30,
+        self.current_qr = image
+        self.current_text = data
+        self.render_qr(self.qr_canvas, image, 290, "preview_photo")
+        self.result_label.configure(
+            text=f"✓  QR Code pronto  ·  {image.width} × {image.height} px",
+            fg=C["success"],
         )
-        self.lista_historico.pack(side="left", fill="both", expand=True)
-        scroll.config(command=self.lista_historico.yview)
-        self.lista_historico.bind("<<ListboxSelect>>", self.ao_selecionar_historico)
+        self.set_result_actions(True)
+        self.add_history(data)
 
-        direita = tk.Frame(corpo, bg=COR_FUNDO)
-        direita.pack(side="left", fill="both", padx=(15, 0))
+    def clear_input(self):
+        self.entry.delete(0, "end")
+        self.update_char_count()
+        self.entry.focus_set()
 
-        self.label_hist_img = tk.Label(
-            direita, text="Selecione um item\npara visualizar", bg="#E0E0E0", width=28, height=13
+    def save_image(self, image, default_name):
+        path = filedialog.asksaveasfilename(
+            title="Salvar QR Code",
+            defaultextension=".png",
+            initialfile=default_name,
+            filetypes=[("Imagem PNG", "*.png")],
         )
-        self.label_hist_img.pack()
+        if path:
+            try:
+                image.save(path, format="PNG")
+                messagebox.showinfo("Imagem salva", f"QR Code salvo em:\n{path}")
+            except OSError as exc:
+                messagebox.showerror("Erro ao salvar", f"Não foi possível salvar a imagem.\n\n{exc}")
 
-        self.label_hist_texto = tk.Label(
-            direita, text="", bg=COR_FUNDO, font=("Arial", 10), wraplength=250, justify="left"
+    def save_current(self):
+        if self.current_qr:
+            self.save_image(self.current_qr, "qrcode.png")
+
+    def copy_content(self):
+        if self.current_text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.current_text)
+            self.result_label.configure(text="✓  Conteúdo copiado para a área de transferência", fg=C["success"])
+
+    # ------------------------------ History --------------------------
+    def build_history(self):
+        self.history_page = tk.Frame(self.page_area, bg=C["bg"])
+
+        toolbar = tk.Frame(self.history_page, bg=C["bg"])
+        toolbar.pack(fill="x", pady=(0, 16))
+        left = tk.Frame(toolbar, bg=C["bg"])
+        left.pack(side="left")
+        tk.Label(
+            left, text="Códigos recentes", bg=C["bg"], fg=C["text"],
+            font=(FONT, 12, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            left, text="Selecione um item para visualizar ou salvar novamente.",
+            bg=C["bg"], fg=C["muted"], font=(FONT, 9),
+        ).pack(anchor="w", pady=(3, 0))
+
+        self.history_count = tk.Label(
+            toolbar, text="", bg=C["bg"], fg=C["muted"], font=(FONT, 9),
         )
-        self.label_hist_texto.pack(pady=(8, 0), anchor="w")
+        self.history_count.pack(side="right", anchor="s")
 
-        botoes = tk.Frame(p, bg=COR_FUNDO)
-        botoes.pack(fill="x", pady=(10, 0))
+        body = tk.Frame(self.history_page, bg=C["bg"])
+        body.pack(fill="both", expand=True)
 
-        self.btn_hist_salvar = tk.Button(
-            botoes, text="Salvar PNG", state="disabled", cursor="hand2",
-            command=self.salvar_item_historico,
+        list_card = self.card(body)
+        list_card.pack(side="left", fill="both", expand=True, padx=(0, 16))
+        search_bar = tk.Frame(list_card, bg=C["surface"])
+        search_bar.pack(fill="x", padx=16, pady=14)
+        tk.Label(
+            search_bar, text="⌕", bg=C["surface"], fg=C["muted"],
+            font=(FONT, 16),
+        ).pack(side="left", padx=(0, 8))
+        self.search_var = tk.StringVar()
+        self.search_entry = tk.Entry(
+            search_bar, textvariable=self.search_var, relief="flat",
+            bg=C["surface_alt"], fg=C["text"], insertbackground=C["accent"],
+            font=(FONT, 10),
         )
-        self.btn_hist_salvar.pack(side="left", expand=True, fill="x", padx=(0, 5))
+        self.search_entry.pack(side="left", fill="x", expand=True, ipady=8)
+        self.search_entry.insert(0, "Buscar no histórico...")
+        self.search_entry.bind("<FocusIn>", self.clear_search_hint)
+        self.search_entry.bind("<KeyRelease>", lambda _e: self.refresh_history())
 
-        self.btn_hist_remover = tk.Button(
-            botoes, text="Remover", state="disabled", cursor="hand2",
-            command=self.remover_item_historico,
+        table_wrap = tk.Frame(list_card, bg=C["surface"])
+        table_wrap.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        columns = ("content", "date")
+        self.tree = ttk.Treeview(
+            table_wrap, columns=columns, show="headings",
+            style="History.Treeview", selectmode="browse",
         )
-        self.btn_hist_remover.pack(side="left", expand=True, fill="x", padx=5)
+        self.tree.heading("content", text="CONTEÚDO")
+        self.tree.heading("date", text="CRIADO EM")
+        self.tree.column("content", width=300, anchor="w")
+        self.tree.column("date", width=125, anchor="w", stretch=False)
+        scrollbar = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", self.select_history)
 
-        tk.Button(
-            botoes, text="Limpar tudo", bg=COR_VERMELHO, fg="white", cursor="hand2",
-            command=self.limpar_historico,
-        ).pack(side="left", expand=True, fill="x", padx=(5, 0))
+        preview = self.card(body)
+        preview.pack(side="left", fill="y")
+        tk.Label(
+            preview, text="PRÉ-VISUALIZAÇÃO", bg=C["surface"],
+            fg=C["muted"], font=(FONT, 8, "bold"),
+        ).pack(anchor="w", padx=16, pady=(16, 10))
+        self.history_canvas = tk.Canvas(
+            preview, width=240, height=230, bg=C["surface_alt"],
+            highlightthickness=0,
+        )
+        self.history_canvas.pack(padx=14)
+        self.history_canvas.create_text(
+            120, 115, text="Selecione um item", fill=C["muted"],
+            font=(FONT, 9),
+        )
+        self.history_text = tk.Label(
+            preview, text="Nenhum item selecionado", bg=C["surface"],
+            fg=C["muted"], font=(FONT, 9), wraplength=220,
+            justify="left", anchor="w",
+        )
+        self.history_text.pack(fill="x", padx=16, pady=(12, 14))
 
-        self.imagem_hist_pil = None
+        self.history_save_btn = self.action_button(
+            preview, "↓  Salvar PNG", self.save_history_item, primary=True
+        )
+        self.history_save_btn.pack(fill="x", padx=14, pady=(0, 8))
+        self.history_delete_btn = self.action_button(
+            preview, "Remover item", self.delete_history_item, primary=False
+        )
+        self.history_delete_btn.pack(fill="x", padx=14, pady=(0, 8))
+        self.history_clear_btn = self.action_button(
+            preview, "Limpar histórico", self.clear_history, primary=False
+        )
+        self.history_clear_btn.pack(fill="x", padx=14, pady=(0, 16))
+        self.set_history_actions(False)
 
-    def adicionar_ao_historico(self, texto):
-        # Se já existe, remove para recolocar no topo com a nova data
-        self.historico = [i for i in self.historico if i["texto"] != texto]
-        self.historico.insert(0, {
-            "texto": texto,
+    def clear_search_hint(self, _event=None):
+        if self.search_entry.get() == "Buscar no histórico...":
+            self.search_entry.delete(0, "end")
+
+    def add_history(self, data):
+        self.history = [item for item in self.history if item["texto"] != data]
+        self.history.insert(0, {
+            "texto": data,
             "data": datetime.now().strftime("%d/%m/%Y %H:%M"),
         })
-        self.historico = self.historico[:100]
-        self.salvar_historico()
+        self.history = self.history[:MAX_HISTORY]
+        if not save_history(self.history):
+            messagebox.showwarning(
+                "Histórico", "O QR foi gerado, mas não foi possível salvar o histórico no disco."
+            )
+        if self.active_page == "history":
+            self.refresh_history()
 
-    def atualizar_lista_historico(self):
-        self.lista_historico.delete(0, "end")
-        for item in self.historico:
-            texto = item["texto"]
-            resumo = texto if len(texto) <= 28 else texto[:27] + "…"
-            self.lista_historico.insert("end", f"{resumo}   ({item['data']})")
-        self.limpar_visualizacao()
-
-    def limpar_visualizacao(self):
-        self.imagem_hist_pil = None
-        self.label_hist_img.config(image="", text="Selecione um item\npara visualizar",
-                                   width=28, height=13)
-        self.label_hist_img.image = None
-        self.label_hist_texto.config(text="")
-        self.btn_hist_salvar.config(state="disabled")
-        self.btn_hist_remover.config(state="disabled")
-
-    def ao_selecionar_historico(self, _event=None):
-        sel = self.lista_historico.curselection()
-        if not sel:
+    def refresh_history(self):
+        if not hasattr(self, "tree"):
             return
-        item = self.historico[sel[0]]
-
-        self.imagem_hist_pil = criar_qr(item["texto"])
-        img = self.imagem_hist_pil.resize((220, 220), Image.Resampling.LANCZOS)
-        img_tk = ImageTk.PhotoImage(img)
-        self.label_hist_img.config(image=img_tk, text="", width=220, height=220)
-        self.label_hist_img.image = img_tk
-
-        self.label_hist_texto.config(text=f"Código: {item['texto']}\nGerado em: {item['data']}")
-        self.btn_hist_salvar.config(state="normal")
-        self.btn_hist_remover.config(state="normal")
-
-    def salvar_item_historico(self):
-        if self.imagem_hist_pil:
-            salvar_png(self.imagem_hist_pil)
-
-    def remover_item_historico(self):
-        sel = self.lista_historico.curselection()
-        if not sel:
-            return
-        del self.historico[sel[0]]
-        self.salvar_historico()
-        self.atualizar_lista_historico()
-
-    def limpar_historico(self):
-        if not self.historico:
-            return
-        if messagebox.askyesno("Limpar histórico", "Apagar todo o histórico de QR Codes?"):
-            self.historico = []
-            self.salvar_historico()
-            self.atualizar_lista_historico()
-
-    # ------------------------------------------------------------------
-    # Rodapé
-    # ------------------------------------------------------------------
-    def construir_rodape(self):
-        self.label_autor = tk.Label(
-            self.corpo, text="Charles Brendon", bg=COR_FUNDO, fg="#6B7280",
-            font=("Arial", 9, "italic"),
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        query = self.search_var.get().strip().lower()
+        if query == "buscar no histórico...":
+            query = ""
+        visible = 0
+        for index, item in enumerate(self.history):
+            content = item.get("texto", "")
+            if query and query not in content.lower():
+                continue
+            preview = content.replace("\n", " ")
+            if len(preview) > 43:
+                preview = preview[:40] + "…"
+            self.tree.insert(
+                "", "end", iid=str(index),
+                values=(preview, item.get("data", "—")),
+            )
+            visible += 1
+        self.history_count.configure(
+            text=f"{visible} de {len(self.history)} itens"
         )
-        self.label_autor.place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
+        self.clear_history_preview()
+
+    def clear_history_preview(self):
+        self.history_selection = None
+        self.history_qr = None
+        self.history_canvas.delete("all")
+        self.history_canvas.create_text(
+            120, 115, text="Selecione um item", fill=C["muted"],
+            font=(FONT, 9),
+        )
+        self.history_text.configure(text="Nenhum item selecionado")
+        self.set_history_actions(False)
+
+    def set_history_actions(self, enabled):
+        for btn in (self.history_save_btn, self.history_delete_btn):
+            btn.configure(
+                state="normal" if enabled else "disabled",
+                bg=(C["accent"] if btn == self.history_save_btn else C["surface"])
+                if enabled else "#E9EDF2",
+                fg=(C["white"] if btn == self.history_save_btn else C["text"])
+                if enabled else C["subtle"],
+                cursor="hand2" if enabled else "arrow",
+            )
+        self.history_clear_btn.configure(
+            state="normal" if self.history else "disabled",
+            bg=C["danger_soft"] if self.history else "#E9EDF2",
+            fg=C["danger"] if self.history else C["subtle"],
+            cursor="hand2" if self.history else "arrow",
+        )
+
+    def select_history(self, _event=None):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        index = int(selection[0])
+        item = self.history[index]
+        self.history_selection = index
+        self.history_qr = generate_qr(item["texto"])
+        self.render_qr(
+            self.history_canvas, self.history_qr, 230, "history_photo"
+        )
+        self.history_text.configure(
+            text=f"{item['texto']}\n\nCriado em {item.get('data', 'data desconhecida')}",
+            fg=C["text"],
+        )
+        self.set_history_actions(True)
+
+    def save_history_item(self):
+        if self.history_qr is not None and self.history_selection is not None:
+            self.save_image(self.history_qr, "qrcode_historico.png")
+
+    def delete_history_item(self):
+        if self.history_selection is None:
+            return
+        del self.history[self.history_selection]
+        save_history(self.history)
+        self.refresh_history()
+
+    def clear_history(self):
+        if not self.history:
+            return
+        if not messagebox.askyesno(
+            "Limpar histórico",
+            "Isso removerá todos os itens salvos no histórico. Deseja continuar?",
+        ):
+            return
+        self.history = []
+        save_history(self.history)
+        self.refresh_history()
 
 
 if __name__ == "__main__":
-    janela = tk.Tk()
-    app = GeradorQRApp(janela)
-    janela.mainloop()
+    window = tk.Tk()
+    app = QRStudio(window)
+    window.mainloop()
