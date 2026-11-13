@@ -237,7 +237,7 @@ class QRStudio:
 
         tk.Frame(self.sidebar, bg=C["nav"]).pack(fill="both", expand=True)
         tk.Label(
-            self.sidebar, text="QR STUDIO  ·  1.0", bg=C["nav"],
+            self.sidebar, text="QR STUDIO  ·  2.2", bg=C["nav"],
             fg="#71869F", font=(FONT, 8),
         ).pack(anchor="w", padx=23, pady=(0, 8))
         tk.Label(
