@@ -1,21 +1,25 @@
 import json
 import os
+import sys
 import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 import qrcode
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageTk
 
 
 # ---------------------------------------------------------------------
 # QR Studio — interface inspirada em Things, Craft, Linear e Notion
 # Dependências: pip install qrcode[pil] pillow
 # ---------------------------------------------------------------------
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(APP_DIR, "historico_qr.json")
-ICON_FILE = os.path.join(APP_DIR, "app.ico")
+
 
 # Paleta: azul-marinho, ciano discreto e superfícies neutras
 C = {
@@ -43,51 +47,36 @@ QR_COLOR = "#14243A"
 QR_SIZE = 300
 MAX_HISTORY = 150
 
+# Pré-visualização responsiva
+QR_MAX_PREVIEW = 550   # tamanho máximo do QR na tela (px)
+QR_MIN_PREVIEW = 120   # tamanho mínimo (px)
+QR_PADDING = 24        # respiro entre o QR e a borda do canvas (px)
+QR_HISTORY_PADDING = 14  # respiro menor na pré-visualização do histórico (px)
 
-def create_app_icon():
-    """Cria o ícone do QR Studio e o salva em formato .ico."""
-    size = 256
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle(
-        (0, 0, size - 1, size - 1), radius=52, fill=C["accent"]
-    )
-
-    def eye(x, y):
-        draw.rounded_rectangle(
-            (x, y, x + 70, y + 70), radius=10, fill="white"
-        )
-        draw.rounded_rectangle(
-            (x + 14, y + 14, x + 56, y + 56),
-            radius=6, fill=C["accent"],
-        )
-        draw.rounded_rectangle(
-            (x + 24, y + 24, x + 46, y + 46),
-            radius=3, fill="white",
-        )
-
-    eye(30, 30)
-    eye(156, 30)
-    eye(30, 156)
-
-    for x, y in (
-        (160, 160), (190, 160), (160, 190),
-        (205, 195), (185, 215), (215, 165),
-    ):
-        draw.rectangle((x, y, x + 20, y + 20), fill="white")
-
-    # O arquivo .ico contém múltiplas resoluções para Windows e atalhos.
-    image.save(ICON_FILE, format="ICO", sizes=[
-        (16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)
-    ])
-    return image
+# Histórico: máximo de caracteres exibidos na coluna CONTEÚDO antes das reticências.
+# Precisa ser maior que 44 (tamanho da chave de nota fiscal).
+HISTORY_PREVIEW_CHARS = 50
 
 
 def generate_qr(data: str) -> Image.Image:
+    """QR em alta resolução (usado para salvar o PNG)."""
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=12,
+        border=4,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    return qr.make_image(fill_color=QR_COLOR, back_color="white").convert("RGB")
+
+
+def generate_qr_base(data: str) -> Image.Image:
+    """QR com 1 pixel por módulo (base para ampliar com nitidez na tela)."""
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=1,
         border=4,
     )
     qr.add_data(data)
@@ -124,25 +113,16 @@ class QRStudio:
     def __init__(self, root):
         self.root = root
         self.root.title("QR Studio")
-        self.root.geometry("1080x760")
-        self.root.minsize(900, 650)
+        self.root.geometry("1180x760")
+        self.root.minsize(1060, 650)
         self.root.configure(bg=C["bg"])
-
-        # iconphoto funciona em Windows e Linux; o .ico também fica
-        # disponível para empacotar o aplicativo como executável.
-        try:
-            icon_image = create_app_icon()
-            self.app_icon_photo = ImageTk.PhotoImage(icon_image)
-            self.root.iconphoto(True, self.app_icon_photo)
-            if os.name == "nt":
-                self.root.iconbitmap(ICON_FILE)
-        except (OSError, tk.TclError):
-            self.app_icon_photo = None
 
         self.history = load_history()
         self.current_qr = None
+        self.current_qr_base = None
         self.current_text = ""
         self.history_qr = None
+        self.history_qr_base = None
         self.preview_photo = None
         self.history_photo = None
         self.active_page = "generator"
@@ -172,7 +152,7 @@ class QRStudio:
             foreground=C["text"],
             rowheight=38,
             borderwidth=0,
-            font=(FONT, 10),
+            font=(FONT, 9),
         )
         style.configure(
             "History.Treeview.Heading",
@@ -237,16 +217,15 @@ class QRStudio:
 
         tk.Frame(self.sidebar, bg=C["nav"]).pack(fill="both", expand=True)
         tk.Label(
-            self.sidebar, text="QR STUDIO  ·  2.2", bg=C["nav"],
+            self.sidebar, text="QR STUDIO  ·  2.5", bg=C["nav"],
             fg="#71869F", font=(FONT, 8),
         ).pack(anchor="w", padx=23, pady=(0, 8))
         tk.Label(
     self.sidebar,
-    text="Feito para facilitar. By Charles Brendon",
+    text="Feito para facilitar.\nBy Charles Brendon",
     bg=C["nav"],
     fg="#A8B8C9",
     font=(FONT, 9),
-    wraplength=178,
     justify="left",
 ).pack(anchor="w", padx=23, pady=(0, 22))
 
@@ -254,7 +233,7 @@ class QRStudio:
         self.main.pack(side="left", fill="both", expand=True)
 
         self.topbar = tk.Frame(
-            self.main, bg=C["surface"], height=86,
+            self.main, bg=C["surface"], height=88,
             highlightbackground=C["border"], highlightthickness=1,
         )
         self.topbar.pack(fill="x")
@@ -377,21 +356,63 @@ class QRStudio:
         return btn
 
     def show_empty_qr(self):
+        """Estado vazio, sempre centralizado no canvas."""
         self.qr_canvas.delete("all")
+        cw = max(self.qr_canvas.winfo_width(), 1)
+        ch = max(self.qr_canvas.winfo_height(), 1)
         self.qr_canvas.create_text(
-            170, 145, text="⌗", fill="#C6D2DF", font=(FONT, 58),
+            cw / 2, ch / 2 - 30, text="⌗", fill="#C6D2DF", font=(FONT, 58),
         )
         self.qr_canvas.create_text(
-            170, 205, text="Seu QR Code aparecerá aqui",
+            cw / 2, ch / 2 + 30, text="Seu QR Code aparecerá aqui",
             fill=C["muted"], font=(FONT, 9),
         )
 
-    def render_qr(self, canvas, image, size, attribute):
-        rendered = image.resize((size - 34, size - 34), Image.Resampling.LANCZOS)
+    def draw_history_placeholder(self):
+        self.history_canvas.delete("all")
+        cw = max(self.history_canvas.winfo_width(), 1)
+        ch = max(self.history_canvas.winfo_height(), 1)
+        self.history_canvas.create_text(
+            cw / 2, ch / 2, text="Selecione um item", fill=C["muted"],
+            font=(FONT, 9),
+        )
+
+    def render_qr(self, canvas, image, attribute, padding=QR_PADDING):
+        """Desenha o QR centralizado, ajustado ao tamanho atual do canvas.
+
+        `image` deve ser a versão base (1 px por módulo). A ampliação usa
+        escala inteira + NEAREST, mantendo as bordas dos módulos nítidas.
+        """
+        cw = max(canvas.winfo_width(), 1)
+        ch = max(canvas.winfo_height(), 1)
+
+        available = min(cw, ch) - padding * 2
+        target = max(QR_MIN_PREVIEW, min(available, QR_MAX_PREVIEW))
+
+        modules = image.width                  # 1 px = 1 módulo
+        scale = max(1, target // modules)      # pixels por módulo (inteiro)
+        final = modules * scale
+
+        rendered = image.resize((final, final), Image.Resampling.NEAREST)
         photo = ImageTk.PhotoImage(rendered)
         canvas.delete("all")
-        canvas.create_image(size / 2, size / 2, image=photo)
+        canvas.create_image(cw / 2, ch / 2, image=photo, anchor="center")
         setattr(self, attribute, photo)
+
+    def on_generator_resize(self, _event=None):
+        if self.current_qr_base is not None:
+            self.render_qr(self.qr_canvas, self.current_qr_base, "preview_photo")
+        else:
+            self.show_empty_qr()
+
+    def on_history_resize(self, _event=None):
+        if self.history_qr_base is not None:
+            self.render_qr(
+                self.history_canvas, self.history_qr_base, "history_photo",
+                padding=QR_HISTORY_PADDING,
+            )
+        else:
+            self.draw_history_placeholder()
 
     # ------------------------------ Generator ------------------------
     def build_generator(self):
@@ -481,7 +502,8 @@ class QRStudio:
             preview_frame, width=290, height=290, bg=C["surface_alt"],
             highlightthickness=0,
         )
-        self.qr_canvas.pack(fill="both", expand=True, pady=5)
+        self.qr_canvas.pack(fill="both", expand=True)
+        self.qr_canvas.bind("<Configure>", self.on_generator_resize)
         self.show_empty_qr()
 
         self.result_label = tk.Label(
@@ -524,14 +546,16 @@ class QRStudio:
             self.entry.focus_set()
             return
         try:
-            image = generate_qr(data)
+            image = generate_qr(data)            # alta resolução (para salvar)
+            base = generate_qr_base(data)        # base leve (para pré-visualizar)
         except Exception as exc:
             messagebox.showerror("Não foi possível gerar", f"O conteúdo não pôde ser convertido.\n\n{exc}")
             return
 
         self.current_qr = image
+        self.current_qr_base = base
         self.current_text = data
-        self.render_qr(self.qr_canvas, image, 290, "preview_photo")
+        self.render_qr(self.qr_canvas, base, "preview_photo")
         self.result_label.configure(
             text=f"✓  QR Code pronto  ·  {image.width} × {image.height} px",
             fg=C["success"],
@@ -621,8 +645,8 @@ class QRStudio:
         )
         self.tree.heading("content", text="CONTEÚDO")
         self.tree.heading("date", text="CRIADO EM")
-        self.tree.column("content", width=300, anchor="w")
-        self.tree.column("date", width=125, anchor="w", stretch=False)
+        self.tree.column("content", width=330, anchor="w")
+        self.tree.column("date", width=120, anchor="w", stretch=False)
         scrollbar = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -636,17 +660,15 @@ class QRStudio:
             fg=C["muted"], font=(FONT, 8, "bold"),
         ).pack(anchor="w", padx=16, pady=(16, 10))
         self.history_canvas = tk.Canvas(
-            preview, width=240, height=230, bg=C["surface_alt"],
+            preview, width=270, height=240, bg=C["surface_alt"],
             highlightthickness=0,
         )
-        self.history_canvas.pack(padx=14)
-        self.history_canvas.create_text(
-            120, 115, text="Selecione um item", fill=C["muted"],
-            font=(FONT, 9),
-        )
+        self.history_canvas.pack(fill="both", expand=True, padx=14)
+        self.history_canvas.bind("<Configure>", self.on_history_resize)
+        self.draw_history_placeholder()
         self.history_text = tk.Label(
             preview, text="Nenhum item selecionado", bg=C["surface"],
-            fg=C["muted"], font=(FONT, 9), wraplength=220,
+            fg=C["muted"], font=(FONT, 9), wraplength=250,
             justify="left", anchor="w",
         )
         self.history_text.pack(fill="x", padx=16, pady=(12, 14))
@@ -697,8 +719,8 @@ class QRStudio:
             if query and query not in content.lower():
                 continue
             preview = content.replace("\n", " ")
-            if len(preview) > 43:
-                preview = preview[:40] + "…"
+            if len(preview) > HISTORY_PREVIEW_CHARS:
+                preview = preview[:HISTORY_PREVIEW_CHARS - 3] + "…"
             self.tree.insert(
                 "", "end", iid=str(index),
                 values=(preview, item.get("data", "—")),
@@ -712,11 +734,8 @@ class QRStudio:
     def clear_history_preview(self):
         self.history_selection = None
         self.history_qr = None
-        self.history_canvas.delete("all")
-        self.history_canvas.create_text(
-            120, 115, text="Selecione um item", fill=C["muted"],
-            font=(FONT, 9),
-        )
+        self.history_qr_base = None
+        self.draw_history_placeholder()
         self.history_text.configure(text="Nenhum item selecionado")
         self.set_history_actions(False)
 
@@ -745,8 +764,10 @@ class QRStudio:
         item = self.history[index]
         self.history_selection = index
         self.history_qr = generate_qr(item["texto"])
+        self.history_qr_base = generate_qr_base(item["texto"])
         self.render_qr(
-            self.history_canvas, self.history_qr, 230, "history_photo"
+            self.history_canvas, self.history_qr_base, "history_photo",
+            padding=QR_HISTORY_PADDING,
         )
         self.history_text.configure(
             text=f"{item['texto']}\n\nCriado em {item.get('data', 'data desconhecida')}",
